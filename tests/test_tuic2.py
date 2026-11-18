@@ -145,6 +145,10 @@ class _AppBase(unittest.IsolatedAsyncioTestCase):
         prompt.focus()
         prompt.text = text
         await pilot.pause()
+        # SLASH1：浮层开着时第一下 enter 只填入、不提交；真实按键再按一次才提交。
+        if prompt.box is not None and prompt.box.suggestions_visible:
+            await pilot.press("enter")
+            await pilot.pause()
         await pilot.press("enter")
         for _ in range(6):
             await pilot.pause()

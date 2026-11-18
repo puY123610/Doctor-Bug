@@ -50,6 +50,10 @@ async def _to_session(app, pilot, text: str = "/status") -> None:
     prompt.focus()
     prompt.text = text
     await pilot.pause()
+    # SLASH1：浮层开着时第一下 enter 只填入、不提交；真实按键再按一次才提交。
+    if prompt.box is not None and prompt.box.suggestions_visible:
+        await pilot.press("enter")
+        await pilot.pause()
     await pilot.press("enter")
     await _settle(pilot)
     while not isinstance(app.screen, SessionScreen):
@@ -247,6 +251,10 @@ class ThoughtToggleTest(_Base):
         prompt.focus()
         prompt.text = text
         await pilot.pause()
+        # SLASH1：浮层开着时第一下 enter 只填入、不提交；真实按键再按一次才提交。
+        if prompt.box is not None and prompt.box.suggestions_visible:
+            await pilot.press("enter")
+            await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
         await app.workers.wait_for_complete()

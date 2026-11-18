@@ -373,6 +373,35 @@ COMPLETION_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/exit", dict(COMMANDS)["/quit"] + "（/quit 的别名）"),
 )
 
+# SLASH1：带参数的命令——填入时命令名后补一个空格，好接着打参数。
+# 判定照 CifixChatApp._handle_slash_inner 的实际分派逐个核过：只收处理器
+# 会消费命令名之后文本的命令（依据见各行注释）；其余命令（/check /model
+# /brief /diff /save /status /mcp /help /quit /exit）的处理器不读参数。
+# 名单成员必须都在 COMPLETION_COMMANDS 里（test_slash1 钉住）。
+ARG_COMMANDS: frozenset[str] = frozenset(
+    {
+        "/run",  # _handle_run(args) → _parse_run_args：--arm/--max-rounds/--workspace/--yes
+        "/accept",  # args[0] 作检查目标路径
+        "/profile",  # _parse_profile_args(args)：目标路径与 --name
+        "/repro",  # args[0] 工作区、args[1:] 症状描述
+        "/cd",  # _cmd_cd：_message_tokens(text)[1] 作目标路径
+        "/workspace",  # _cmd_workspace：add/remove <路径>
+        "/team",  # _cmd_team：_message_tokens(text)[1:] 添加/移除员工
+        "/mode",  # _cmd_mode：tokens[1] 作模式名
+        "/permissions",  # _cmd_permissions：text.split()[1:] 撤销子命令
+        "/pending",  # _cmd_pending：text.split()[1:] 批准/丢弃子命令
+        "/runs",  # _cmd_runs：text.split()[1:] 看某次详情
+        "/sessions",  # _cmd_sessions：restore/rename/delete 子命令
+        "/market",  # _cmd_market：parts[1:] 安装/卸载子命令
+    }
+)
+
+
+def completion_fill(command: str) -> str:
+    """SLASH1：补全填入的文本——带参数的命令补一个尾随空格，其余原样。"""
+    return f"{command} " if command in ARG_COMMANDS else command
+
+
 _SCOPE_LABELS: dict[str, str] = {
     "global": "全局",
     "page": "页面",
@@ -886,7 +915,9 @@ class PromptInput(TextArea):
         complete = keybinds.key_of("prompt_complete")
         submit = keybinds.key_of("prompt_submit")
         newline = keybinds.key_of("prompt_newline")
-        # 命令补全浮层优先吃掉 esc/↑/↓/tab；enter 仍走既有提交路由。
+        # 命令补全浮层优先吃掉 esc/↑/↓/tab/enter；浮层可见时 enter 是填入
+        # （SLASH1，与 @ 模式同一写法，复用 prompt_submit 键位），填入后浮层
+        # 关闭，再按 enter 才提交；浮层不可见时 enter 照旧提交。
         if self.box is not None and self.box.suggestions_visible:
             if dismiss is not None and event.key == dismiss:
                 event.stop()
@@ -903,12 +934,9 @@ class PromptInput(TextArea):
                 event.prevent_default()
                 self.box.complete_suggestion(self)
                 return
-            # TUID2：@ 文件补全时 enter 选中（复用 prompt_submit 键位，不新增条目）。
-            if (
-                self.box.mention_mode
-                and submit is not None
-                and event.key == submit
-            ):
+            # TUID2：@ 文件补全时 enter 选中；SLASH1：斜杠补全同样 enter 填入
+            # （复用 prompt_submit 键位，不新增条目）。
+            if submit is not None and event.key == submit:
                 event.stop()
                 event.prevent_default()
                 self.box.complete_suggestion(self)
@@ -984,6 +1012,25 @@ class PromptBase(Widget):
         self.refresh()
 
 
+class SuggestionList(Static):
+    """补全浮层（SLASH1）：仍是原来那块 Static，渲染一字不变，只多接鼠标单击。
+
+    浮层每个候选恰好占一行（renderer 逐行 append，候选文本不含换行），
+    因此点中的内容行号就是候选下标。
+    """
+
+    def __init__(self, box: "PromptBox", *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.box = box
+
+    def on_click(self, event: Any) -> None:
+        offset = event.get_content_offset(self)
+        if offset is None:
+            return
+        event.stop()
+        self.box.click_suggestion(offset.y)
+
+
 class PromptBox(Vertical):
     """Home/Session 共用的自绘复合输入框。"""
 
@@ -1007,7 +1054,8 @@ class PromptBox(Vertical):
             classes="prompt-status",
             markup=False,
         )
-        self._suggest = Static(
+        self._suggest = SuggestionList(
+            self,
             "",
             classes="slash-suggest",
             markup=False,
@@ -1015,6 +1063,8 @@ class PromptBox(Vertical):
         self._suggestion_items: list[tuple[str, str]] = []
         self._suggestion_index = 0
         self._mention_mode = False
+        # SLASH1：刚填入的文本——它触发的那次文本变化不再把浮层弹回来。
+        self._filled_text: str | None = None
 
     def compose(self) -> ComposeResult:
         yield self._suggest
@@ -1044,6 +1094,16 @@ class PromptBox(Vertical):
         return self._mention_mode and bool(self._suggestion_items)
 
     def update_suggestions(self, text: str) -> None:
+        # SLASH1：等待确认时禁用浮层（确认优先），输入框打的就是答复。
+        if getattr(self.host, "_awaiting_confirm", False):
+            self._filled_text = None
+            self.hide_suggestions()
+            return
+        if self._filled_text is not None:
+            filled, self._filled_text = self._filled_text, None
+            if text == filled:
+                self.hide_suggestions()
+                return
         query = file_mention.mention_query(text)
         if query is not None:
             self._update_mention_suggestions(query)
@@ -1108,8 +1168,19 @@ class PromptBox(Vertical):
             self.host.select_mention(prompt_input, rel)
             return
         command = self._suggestion_items[self._suggestion_index][0]
-        prompt_input.text = command
-        prompt_input.cursor_location = (0, len(command))
+        value = completion_fill(command)
+        self.hide_suggestions()
+        self._filled_text = value
+        prompt_input.text = value
+        prompt_input.cursor_location = (0, len(value))
+
+    def click_suggestion(self, row: int) -> None:
+        """SLASH1：鼠标单击第 row 行 = 选中该行并填入（与键盘填入同一路径）。"""
+        if not 0 <= row < len(self._suggestion_items):
+            return
+        self._suggestion_index = row
+        self.complete_suggestion(self._input)
+        self._input.focus()
 
     def _render_suggestions(self) -> None:
         rendered = Text()
@@ -2818,6 +2889,14 @@ class CifixChatApp(App):
             PLACEHOLDER_EXAMPLES
         )
         self.refresh_placeholder()
+
+    def _hide_completion_menus(self) -> None:
+        """SLASH1：进入等待确认时收起已弹出的补全浮层（确认优先）。"""
+        try:
+            for box in self.screen.query(PromptBox):
+                box.hide_suggestions()
+        except Exception:  # noqa: BLE001 - 切页瞬间可能没有输入框
+            pass
 
     def refresh_placeholder(self) -> None:
         """HINT1：按当前会话状态重算输入框提示并写回输入框（只改提示）。"""
@@ -6179,6 +6258,7 @@ class CifixChatApp(App):
             self._confirm_future = future
             self._awaiting_confirm = True
             self.refresh_placeholder()
+            self._hide_completion_menus()
             modal: ConfirmModal | None = None
             try:
                 if lines is not None:

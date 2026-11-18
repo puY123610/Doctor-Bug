@@ -702,6 +702,10 @@ class CifixChatAppTest(unittest.IsolatedAsyncioTestCase):
         prompt.focus()
         prompt.text = text
         await pilot.pause()
+        # SLASH1：浮层开着时第一下 enter 只填入、不提交；真实按键再按一次才提交。
+        if prompt.box is not None and prompt.box.suggestions_visible:
+            await pilot.press("enter")
+            await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
 
@@ -1493,9 +1497,9 @@ class CifixChatAppTest(unittest.IsolatedAsyncioTestCase):
 
             await pilot.press("tab")
             await pilot.pause()
-            self.assertEqual(prompt.text, "/repro")
-            self.assertTrue(box.suggestions_visible)
-            self.assertIn("/repro", str(box._suggest.content))
+            # SLASH1：/repro 带参数，填入补尾随空格；填入后浮层关闭。
+            self.assertEqual(prompt.text, "/repro ")
+            self.assertFalse(box.suggestions_visible)
 
             prompt.text = "/"
             await pilot.pause()
@@ -1507,7 +1511,7 @@ class CifixChatAppTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
-            self.assertEqual(prompt.text, "/market")
+            self.assertEqual(prompt.text, "/market ")
 
             prompt.text = "/ru"
             await pilot.pause()
@@ -1837,6 +1841,10 @@ async def _submit_text(app, pilot, text: str) -> None:
     prompt.focus()
     prompt.text = text
     await pilot.pause()
+    # SLASH1：浮层开着时第一下 enter 只填入、不提交；真实按键再按一次才提交。
+    if prompt.box is not None and prompt.box.suggestions_visible:
+        await pilot.press("enter")
+        await pilot.pause()
     await pilot.press("enter")
     await pilot.pause()
 
