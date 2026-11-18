@@ -1,0 +1,71 @@
+{
+  "entries": [
+    {
+      "description": "官方文件系统 MCP 服务器（@modelcontextprotocol/server-filesystem）；可访问范围由调用参数决定，调用仍逐次过本平台门禁",
+      "id": "fs-tools",
+      "kind": "mcp",
+      "name": "文件系统工具",
+      "server": {
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/tmp"
+        ],
+        "command": "npx",
+        "name": "filesystem"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "description": "官方知识图谱记忆 MCP 服务器（@modelcontextprotocol/server-memory）；调用仍逐次过本平台门禁",
+      "id": "memory-store",
+      "kind": "mcp",
+      "name": "知识图谱记忆",
+      "server": {
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-memory"
+        ],
+        "command": "npx",
+        "name": "memory"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "description": "官方网页抓取 MCP 服务器（mcp-server-fetch）；调用仍逐次过本平台门禁",
+      "id": "web-fetch",
+      "kind": "mcp",
+      "name": "网页抓取",
+      "server": {
+        "args": [
+          "mcp-server-fetch"
+        ],
+        "command": "uvx",
+        "name": "fetch"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "description": "官方 Git MCP 服务器（mcp-server-git）；调用仍逐次过本平台门禁",
+      "id": "git-tools",
+      "kind": "mcp",
+      "name": "Git 工具",
+      "server": {
+        "args": [
+          "mcp-server-git"
+        ],
+        "command": "uvx",
+        "name": "git"
+      },
+      "version": "1.0.0"
+    },
+    {
+      "description": "无测试仓库的复现分诊流程：先复现、再定位、后冻结验收的操作次序与注意事项",
+      "id": "repo-triage",
+      "kind": "skill",
+      "name": "仓库分诊流程包",
+      "pack": "skills/repo-triage",
+      "version": "1.0.0"
+    }
+  ]
+}

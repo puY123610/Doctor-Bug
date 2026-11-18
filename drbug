@@ -1,0 +1,13 @@
+#!/bin/sh
+# drbug — 项目内 CLI 垫片：优先用同目录 .venv，未 pip install 也能直接运行。
+# 故意不 cd 到安装目录：默认工作区应当是用户当前目录，平台资产按本文件位置解析。
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+    echo "drbug: 找不到 ${PYTHON}，请先按 README 建好项目 .venv" >&2
+    exit 127
+fi
+PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$PYTHON" -m core.cli "$@"

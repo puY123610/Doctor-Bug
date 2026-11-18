@@ -1,0 +1,11 @@
+{
+  "files": {
+    "conftest.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pytest.ini": "c809c969ec7e11b9ff37784e9c6fcc0b7c5148d168e18b05aed797e03fbd6ead",
+    "tests/test_auth.py": "b403c85cad349f370137d05c67da762b364246cb7c057487ca4bba419402059f",
+    "tests/test_billing.py": "7d7dbb3f49c93ae3edab1cf3d88134d437f075830c7582c0f48d328469d80b7f",
+    "tests/test_inventory.py": "bb2a10b195f74fbc6e5128b04f89d334c3a6af62aa8f56ef2a1405dfb14464bf",
+    "tests/test_orders.py": "ade049280051b6ee491d1fb679fb6d73803de08025a04b2e6163fe3a68553e5a"
+  },
+  "source": "/Users/hostuser/Desktop/grok-bot/platform/tests/fixtures/demo_repo"
+}

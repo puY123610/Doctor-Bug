@@ -1,0 +1,31 @@
+{
+  "name": "drbug",
+  "version": "0.1.0",
+  "description": "Doctor Bug — 冻结验收与证据改派平台：在任意项目目录检测并修复回归",
+  "bin": {
+    "drbug": "bin/drbug.js"
+  },
+  "files": [
+    "bin",
+    "platform",
+    "prepack.js",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node prepack.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "keywords": [
+    "drbug",
+    "agentscope",
+    "pytest",
+    "frozen-acceptance"
+  ],
+  "license": "UNLICENSED"
+}

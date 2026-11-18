@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "specialists": [
+    {
+      "id": "billing-specialist",
+      "name": "计费专家",
+      "scope": "backoffice/billing.py：优惠券、税基、折扣与总额（整数分）"
+    },
+    {
+      "id": "inventory-specialist",
+      "name": "库存数据专家",
+      "scope": "backoffice/inventory.py：库存台账、可售量、预留与释放"
+    },
+    {
+      "id": "auth-specialist",
+      "name": "接口鉴权专家",
+      "scope": "backoffice/auth.py：用户角色、require_role 与退款权限判断"
+    },
+    {
+      "id": "db-specialist",
+      "name": "数据库专家",
+      "scope": "backoffice/db.py：sqlite3 内存订单存储 save/get/update_status（本工单暂无对应失败证据，保留在册）"
+    },
+    {
+      "id": "generalist",
+      "name": "通用修理工",
+      "scope": "无专属专家或跨模块无明确归因时的兜底修复"
+    }
+  ],
+  "node_overrides": {
+    "tests/test_orders.py::test_checkout_total_with_coupon": {
+      "specialists": [
+        "billing-specialist"
+      ],
+      "rationale": "该用例断言含 percent 10 + fixed 300 优惠券的 subtotal/discount/tax/total；失败点是税基应按（小计−折扣）计算，文件虽在 orders，根因在 billing.py 的计税逻辑，orders 只是调用方。",
+      "source": "demo_repo/README.md 模块地图与业务规则（billing.py 负责优惠券、税、总额；税按小计−折扣的 6%）；demo_repo/REGRESSION_NOTES.md 工单 1「用券订单金额不对」；REPO1 verified 失败归因（计费 3 条之一）。"
+    },
+    "tests/test_orders.py::test_stock_after_single_checkout": {
+      "specialists": [
+        "inventory-specialist"
+      ],
+      "rationale": "该用例只断言结账 3 件后 available == 7；失败点是可用量被重复扣减，根因在 inventory.py 的 available() 预留核算，orders.py 仅调用 reserve。",
+      "source": "demo_repo/README.md 模块地图与业务规则（inventory.py 负责库存台账、可售量、预留；available = 总库存 − 已预留）；demo_repo/REGRESSION_NOTES.md 工单 2「库存下降过快」；REPO1 verified 失败归因（库存 2 条之一）。"
+    },
+    "tests/test_orders.py::test_refund_rejected_for_support_role": {
+      "specialists": [
+        "auth-specialist"
+      ],
+      "rationale": "该用例断言 support 角色退款抛 PermissionDenied 且订单状态保持 created；根因在 auth.py 的 can_refund 把 support 也放行，orders.refund 只是权限检查的调用方。",
+      "source": "demo_repo/README.md 模块地图与业务规则（auth.py 负责用户、角色、退款权限；仅 finance 可退款）；demo_repo/REGRESSION_NOTES.md 工单 3「支持账号可以退款」；REPO1 verified 失败归因（鉴权 2 条之一）。"
+    },
+    "tests/test_orders.py::test_full_checkout_flow": {
+      "specialists": [
+        "billing-specialist",
+        "inventory-specialist",
+        "auth-specialist"
+      ],
+      "rationale": "真三耦合综合用例（REPO1-fix1 强化后）：带 percent 10 券结账，总额断言依赖 billing.py 的税基按（小计−折扣）计算，只留计费变异即死在 8586 总额断言（实际 8640）；结账后库存读数断言依赖 inventory.py 的 available 预留核算，只留库存变异即死在 available == 4（实际 2）；support 退款拦截断言依赖 auth.py 的 can_refund 角色判断，只留鉴权变异即死在退款 DID NOT RAISE。三处变异各堵一个断言、缺一不可，故三方专家同时派工。",
+      "source": "demo_repo/README.md 模块地图与业务规则（billing.py 计税、inventory.py 预留核算、auth.py 退款角色判断）；REPO1-fix1 将 tests/test_orders.py::test_full_checkout_flow 强化为计费+库存+鉴权三耦合；编排者三组单变异保留探针结论：只留计费变异死在总额断言 8586（实测 8640）、只留库存变异死在 available==4（实测 2）、只留鉴权变异死在退款 DID NOT RAISE。"
+    }
+  },
+  "module_defaults": {
+    "billing": [
+      "billing-specialist"
+    ],
+    "inventory": [
+      "inventory-specialist"
+    ],
+    "auth": [
+      "auth-specialist"
+    ],
+    "orders": [
+      "generalist"
+    ]
+  },
+  "fallback": "generalist",
+  "roster": {
+    "package": "backoffice",
+    "symptoms": "",
+    "specialists": {
+      "billing-specialist": {
+        "files": [
+          "backoffice/billing.py"
+        ],
+        "blurb": "你是 billing-specialist（计费专家），负责订单计价、优惠券、税基与总额。"
+      },
+      "inventory-specialist": {
+        "files": [
+          "backoffice/inventory.py"
+        ],
+        "blurb": "你是 inventory-specialist（库存专家），负责库存、预留与可售数量核算。"
+      },
+      "auth-specialist": {
+        "files": [
+          "backoffice/auth.py"
+        ],
+        "blurb": "你是 auth-specialist（鉴权专家），负责角色判断与退款权限。"
+      },
+      "db-specialist": {
+        "files": [
+          "backoffice/db.py"
+        ],
+        "blurb": "你是 db-specialist（数据库专家），负责订单持久化与数据访问。"
+      },
+      "generalist": {
+        "files": [
+          "backoffice/billing.py",
+          "backoffice/inventory.py",
+          "backoffice/auth.py"
+        ],
+        "blurb": "你是 generalist（通用修复者），可以跨计费、库存、鉴权三个方向定位根因。",
+        "specialist": false
+      }
+    }
+  }
+}

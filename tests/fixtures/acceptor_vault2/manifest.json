@@ -1,0 +1,12 @@
+{
+  "files": {
+    "pytest.ini": "4d5193eb36807e4622451417a9fe7bea71e7307137cd05cc214332e514fd9527",
+    "tests/test_bookings.py": "d9e9d93958881353260189f6221b109bc33e77072f4f1cfbeb0d2fb74d79ee23",
+    "tests/test_conflicts.py": "ca51106a19afb650f83797b186739c40109a056f479ff2a36b19db1e7187f3c4",
+    "tests/test_end_to_end.py": "c6cc9656b578f5a257d4d27a49ebb31cd1180032e75b8ca494ef07e1eb5a0290",
+    "tests/test_members.py": "86b717b10419aec887ed6bfe05be4b70b9c205229530cbd8a61e011a96ea094f",
+    "tests/test_slots.py": "03bd7ec77693812a7d02be9f6b295a8d1969c94131bfbad929424cdbef68d8d0"
+  },
+  "package": "src/studyroom",
+  "source": "/Users/hostuser/Desktop/grok-bot/platform/tests/fixtures/demo_repo2"
+}

@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "specialists": [
+    {
+      "id": "scheduling-specialist",
+      "name": "时段调度专家",
+      "scope": "src/studyroom/slots.py、src/studyroom/conflicts.py：时间解析、可用性计算、半开区间冲突判定"
+    },
+    {
+      "id": "booking-specialist",
+      "name": "预约生命周期专家",
+      "scope": "src/studyroom/bookings.py：预约、取消、房间台账与可用性释放"
+    },
+    {
+      "id": "member-specialist",
+      "name": "会员规则专家",
+      "scope": "src/studyroom/members.py：会员每日预约配额（按预约日期、按会员）"
+    },
+    {
+      "id": "generalist",
+      "name": "通用修理工",
+      "scope": "无专属专家或跨模块无明确归因时的兜底修复"
+    }
+  ],
+  "node_overrides": {
+    "tests/test_end_to_end.py::test_cross_room_back_to_back_then_cancel_releases": {
+      "specialists": [
+        "scheduling-specialist",
+        "booking-specialist"
+      ],
+      "rationale": "该端到端用例同时覆盖半开区间背靠背（conflicts.py 的边界比较）、跨房独立（bookings.py 的房间台账）与取消释放（bookings.py 取消时移出台账）；三处变异各自都能单独卡住它。members 配额不参与该用例，故不派会员专家。",
+      "source": "demo_repo2/README.md 业务规则（半开区间、房间独立、取消立即释放）；demo_repo2/REGRESSION_NOTES.md 工单 1/2/3；GEN1 单变异探针：only-conflicts/only-ledger/only-cancel 三种副本均使该用例失败。"
+    }
+  },
+  "module_defaults": {
+    "slots": [
+      "scheduling-specialist"
+    ],
+    "conflicts": [
+      "scheduling-specialist"
+    ],
+    "bookings": [
+      "booking-specialist"
+    ],
+    "members": [
+      "member-specialist"
+    ],
+    "end_to_end": [
+      "generalist"
+    ]
+  },
+  "fallback": "generalist",
+  "roster": {
+    "package": "src/studyroom",
+    "symptoms": "1. 工单 1「背靠背预约被拒」：10:00-11:00 结束后，11:00-12:00 的下一段预约被误判为占用。\n2. 工单 2「不同自习室互相影响」：A 房某时段有预约后，B 房同一时段也被判为不可用。\n3. 工单 3「取消后时段没有释放」：预约已显示 cancelled，但同一房间同一时段仍无法再次预约。",
+    "specialists": {
+      "scheduling-specialist": {
+        "files": [
+          "src/studyroom/slots.py",
+          "src/studyroom/conflicts.py"
+        ],
+        "blurb": "你是 scheduling-specialist（时段调度专家），负责时间解析、可用性计算与半开区间冲突判定。"
+      },
+      "booking-specialist": {
+        "files": [
+          "src/studyroom/bookings.py"
+        ],
+        "blurb": "你是 booking-specialist（预约生命周期专家），负责预约、取消、房间台账与时段释放。"
+      },
+      "member-specialist": {
+        "files": [
+          "src/studyroom/members.py"
+        ],
+        "blurb": "你是 member-specialist（会员规则专家），负责会员每日预约配额与按日期/会员计数。"
+      },
+      "generalist": {
+        "files": [
+          "src/studyroom/slots.py",
+          "src/studyroom/conflicts.py",
+          "src/studyroom/bookings.py",
+          "src/studyroom/members.py"
+        ],
+        "blurb": "你是 generalist（通用修理工），在缺少专属专家或跨模块无明确归因时对四个模块做兜底修复。",
+        "specialist": false
+      }
+    }
+  }
+}

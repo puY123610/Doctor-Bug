@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frozen-accept-platform"
+version = "0.1.0"
+description = "冻结验收与证据改派的多智能体编排调度平台"
+requires-python = ">=3.11"
+dependencies = [
+    "agentscope==2.0.11",
+    "pytest==9.2.0",
+    "rich",
+    "textual==8.2.8",
+]
+
+[tool.setuptools]
+packages = ["acceptor", "agentscope_ext", "core", "kb"]
