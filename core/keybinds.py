@@ -116,7 +116,7 @@ class KeybindEntry:
 
 def _bind(
     entry_id: str,
-    key: str,
+    key: str | None,
     description: str,
     scope: str,
     action: str,
@@ -167,6 +167,14 @@ DEFAULTS: tuple[KeybindEntry, ...] = (
         "quit",
         priority=True,
         binding_description="退出",
+    ),
+    _bind(
+        "copy_last_reply",
+        None,
+        "复制上一条主治医生回复的原文",
+        SCOPE_GLOBAL,
+        "copy_last_reply",
+        binding_description="复制回复",
     ),
     _bind(
         "open_commands",
@@ -777,7 +785,13 @@ def _validate_defaults() -> None:
             raise RuntimeError(f"{entry.id} 缺少 screen")
         if entry.scope in (SCOPE_GLOBAL, SCOPE_PAGE) and entry.screen is not None:
             raise RuntimeError(f"{entry.id} 不应带 screen")
-        if entry.key is None or not valid_key(entry.key):
+        # COPY1：默认不绑的条目（key 为 None）合法——只在 describe 里列为
+        # 「未绑定」，不进 BINDINGS，老板可在键位文件里自己绑。
+        if entry.key is None:
+            if entry.bind and not entry.action:
+                raise RuntimeError(f"{entry.id} 要装进 BINDINGS 但没有 action")
+            continue
+        if not valid_key(entry.key):
             raise RuntimeError(f"默认键非法：{entry.id}={entry.key!r}")
         if normalize_key(entry.key) != entry.key:
             raise RuntimeError(

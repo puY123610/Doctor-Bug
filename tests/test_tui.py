@@ -93,6 +93,7 @@ BACKEND_COMMANDS = (
     "/pending",
     "/runs",
     "/diff",  # TUIC2
+    "/copy",  # COPY1
     "/sessions",  # F1
     "/save",  # F2
     "/market",

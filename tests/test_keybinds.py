@@ -60,6 +60,15 @@ class KeybindRegistryTests(unittest.TestCase):
     def test_defaults_pin_every_existing_key(self) -> None:
         expected = {
             "quit": ("ctrl+c", "global", "quit", None, True, "退出"),
+            # COPY1：复制上一条回复，默认不绑（key 为 None），老板可自绑。
+            "copy_last_reply": (
+                None,
+                "global",
+                "copy_last_reply",
+                None,
+                False,
+                "复制回复",
+            ),
             "open_commands": (
                 "ctrl+p",
                 "global",

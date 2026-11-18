@@ -305,7 +305,8 @@ class KeybindTest(unittest.TestCase):
         # TUIC2 再增 timeline / timeline_close 两条。
         # BLK1 再增 thought_block_toggle 一条（单子要求的新键位）。
         # BLK2 再增 tool_block_toggle 一条（单子要求的新键位）。
-        self.assertEqual(len(keybinds.DEFAULTS), 39)
+        # COPY1 再增 copy_last_reply 一条（单子授权，默认不绑）。
+        self.assertEqual(len(keybinds.DEFAULTS), 40)
         self.assertFalse(re.search(r"\bBinding\(", Path(recents.__file__).read_text()))
 
 

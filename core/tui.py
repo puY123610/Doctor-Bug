@@ -29,25 +29,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import threading
 import time
 import tomllib
+import webbrowser
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from rich.cells import cell_len
 from rich.markdown import Markdown
+from rich.segment import Segment
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
+from textual import events
+from textual.events import TextSelected
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
@@ -132,6 +141,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/pending", "查看待批准清单、批准并重新执行或丢弃"),
     ("/runs", "查看历次运行记录与详情"),
     ("/diff", "重显最近一轮运行的补丁（只读）"),
+    ("/copy", "复制上一条主治医生回复的原文到系统剪贴板"),
     ("/sessions", "会话列表：恢复、重命名或删除本工作区存档"),
     ("/save", "立刻存档当前会话"),
     ("/market", "浏览扩展市场、安装/卸载扩展"),
@@ -1247,6 +1257,180 @@ class FooterLine(Widget):
         self.refresh()
 
 
+# ----------------------------------------------------------------------
+# COPY1：回复区拖选复制 + 系统剪贴板
+# ----------------------------------------------------------------------
+COPY_DONE = "已复制"
+COPY_EMPTY = "还没有主治医生的回复可复制"
+PBCOPY_TIMEOUT = 3.0
+
+
+def _stylize_chars(strip: Strip, start: int, end: int, style: Any) -> Strip:
+    """给 strip 里字符下标 [start, end) 的文字叠加 style；字符与格宽不变。"""
+    segments: list[Segment] = []
+    position = 0
+    for segment in strip:
+        text, base, control = segment
+        if control:
+            segments.append(segment)
+            continue
+        length = len(text)
+        lo, hi = max(start, position), min(end, position + length)
+        if lo < hi:
+            if lo > position:
+                segments.append(Segment(text[: lo - position], base, control))
+            segments.append(
+                Segment(
+                    text[lo - position : hi - position],
+                    base + style if base else style,
+                    control,
+                )
+            )
+            if hi < position + length:
+                segments.append(Segment(text[hi - position :], base, control))
+        else:
+            segments.append(segment)
+        position += length
+    return Strip(segments, strip.cell_length)
+
+
+class ReplyLog(RichLog):
+    """#log 用的 RichLog 子类（COPY1）：只补拖选所需的三样，写入与渲染不改。
+
+    参照 textual/widgets/_log.py 的 Log：
+    * ``_render_line`` 末尾 ``apply_offsets``（Log :312）——每段带上
+      (字符下标, 行号)，compositor 把指针所在格子按逐字格宽换算回字符
+      下标，中文两格宽由此对齐，不按字符数硬切；
+    * ``get_selection``（Log :265）——按行存储（self.lines 的 Strip.text）
+      拼成全文交给 Selection.extract，坐标同为（行, 字符下标）；
+    * 选中高亮用框架的 screen--selection 样式，叠加在已渲染的格子上，
+      不改文字本身。
+    选出的是「渲染后的样子」：软折行按行断开、列表符号等渲染字符包含在内，
+    行尾补齐用的空格去掉。
+    """
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        line = super()._render_line(y, scroll_x, width)
+        if y >= len(self.lines):
+            return line
+        prefix = (
+            len(self.lines[y].crop(0, scroll_x).text) if scroll_x > 0 else 0
+        )
+        selection = self.text_selection
+        if selection is not None:
+            span = selection.get_span(y)
+            if span is not None:
+                start, end = span
+                if end == -1:
+                    end = prefix + len(line.text)
+                style = self.screen.get_component_rich_style("screen--selection")
+                line = _stylize_chars(line, start - prefix, end - prefix, style)
+        return line.apply_offsets(prefix, y)
+
+    def get_selection(self, selection: Any) -> tuple[str, str] | None:
+        text = "\n".join(strip.text.rstrip() for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Any) -> None:
+        self._line_cache.clear()
+        self.refresh()
+
+    # ---- LINK1：点击 Markdown 渲染出的链接 ----
+    # 判定照 OpenCode：左键按下与松手落在同一格、期间没移到别的格、没按
+    # 修饰键（ctrl/meta/shift；终端里 alt/option 也报为 meta），且松手时
+    # 没有成形的选区，才算一次点击。拖过再松手归 COPY1 的复制，绝不打开。
+    _link_press: list | None = None  # [按下时屏幕坐标, 是否带修饰键, 是否移动过]
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            self._link_press = None
+            return
+        self._link_press = [
+            event.screen_offset,
+            bool(event.ctrl or event.meta or event.shift),
+            False,
+        ]
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        press = self._link_press
+        if press is not None and event.screen_offset != press[0]:
+            press[2] = True
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        press, self._link_press = self._link_press, None
+        if press is None:
+            return
+        offset, modified, moved = press
+        if moved or modified or event.ctrl or event.meta or event.shift:
+            return
+        if event.screen_offset != offset:
+            return
+        try:
+            if self.screen.selections:  # 有选区＝拖选，归复制
+                return
+        except Exception:  # noqa: BLE001 - 切页瞬间
+            return
+        # URL 只取点击处文字段的 style.link（框架在转发前按屏幕坐标填好
+        # event.style，见 textual/screen.py _forward_event）。
+        url = event.style.link
+        if url:
+            open_reply_link(self.app, url)
+
+
+def is_web_link(url: str) -> bool:
+    """LINK1 白名单：urlparse 后 scheme 只认 http/https，且 netloc 非空。"""
+    try:
+        parts = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
+
+def open_reply_link(app: Any, url: str) -> bool:
+    """白名单内用标准库 webbrowser.open 打开；其余只给一行提示，不崩。"""
+    if not is_web_link(url):
+        app.notify(f"这个链接不是网址，没有打开：{url}", severity="warning")
+        return False
+    try:
+        opened = bool(webbrowser.open(url, new=2))
+    except Exception:  # noqa: BLE001 - 浏览器起不来也不崩
+        opened = False
+    if not opened:
+        app.notify(f"没能打开浏览器，链接是：{url}", severity="warning")
+    return opened
+
+
+def _write_system_clipboard(text: str) -> tuple[bool, str]:
+    """本机剪贴板：pbcopy（文本走 stdin，utf-8，显式 UTF-8 locale）。
+
+    返回 (是否写成, 失败原因)。找不到 pbcopy、超时、非零退出都算失败，
+    不抛异常。
+    """
+    command = shutil.which("pbcopy")
+    if command is None:
+        return False, "找不到 pbcopy"
+    env = os.environ.copy()
+    # pbcopy 按 locale 解码 stdin；TUI 进程的 LANG/LC_* 可能不是 UTF-8，
+    # 不显式指定时中文会乱码。
+    env["LANG"] = "en_US.UTF-8"
+    env["LC_ALL"] = "en_US.UTF-8"
+    env["LC_CTYPE"] = "en_US.UTF-8"
+    try:
+        result = subprocess.run(
+            [command],
+            input=text.encode("utf-8"),
+            env=env,
+            capture_output=True,
+            timeout=PBCOPY_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"pbcopy 没跑成（{type(exc).__name__}）"
+    if result.returncode != 0:
+        return False, f"pbcopy 退出码 {result.returncode}"
+    return True, ""
+
+
 class HistoryRecord(tuple):
     """一条历史记录：(kind, text, tone)，外加可选的单次实际模型。
 
@@ -1532,7 +1716,7 @@ class SessionScreen(Screen):
         yield SessionHeader(self.host, id="session-header")
         with Horizontal(id="session-main"):
             with Vertical(id="transcript"):
-                yield RichLog(id="log", wrap=True, markup=False)
+                yield ReplyLog(id="log", wrap=True, markup=False)
                 with VerticalScroll(id="stream"):
                     yield Static("", id="stream-text", markup=False)
             yield SessionSidebar(self.host, id="sidebar")
@@ -3654,6 +3838,70 @@ class CifixChatApp(App):
         )
         self._announce_context_restart()
 
+    # ------------------------------------------------------------------
+    # COPY1：拖选松手自动复制 / /copy 原文兜底
+    # ------------------------------------------------------------------
+    def copy_text_out(self, text: str) -> bool:
+        """双通道写剪贴板：pbcopy 为主（本机），OSC52 为补充（远程）。
+
+        pbcopy 写成才说「已复制」；失败给一行如实提示，不崩、不假装成功。
+        """
+        try:
+            self.copy_to_clipboard(text)  # OSC52 + app.clipboard
+        except Exception:  # noqa: BLE001 - 补充通道失败不影响主通道
+            pass
+        ok, reason = _write_system_clipboard(text)
+        if ok:
+            self.notify(COPY_DONE, timeout=2)
+            return True
+        self.notify(
+            f"没能写进系统剪贴板（{reason}），已改用终端剪贴板通道，"
+            "你的终端不支持时可能没复制上",
+            severity="warning",
+            timeout=4,
+        )
+        return False
+
+    def on_text_selected(self, event: TextSelected) -> None:
+        """拖选松手：选区非空才复制并提示，选区保留；原地单击不复制。
+
+        框架在按下与松手同一格时已先清掉选区（screen._forward_event），
+        所以单击走到这里选区为空，什么也不做。同一选区重复松手（如点滚动
+        条）不重复复制。
+        """
+        try:
+            screen = self.screen
+            selections = dict(screen.selections)
+        except Exception:  # noqa: BLE001 - 切页瞬间
+            return
+        if not selections:
+            self._last_copied_selection = None
+            return
+        key = (id(screen), tuple(sorted((id(w), s) for w, s in selections.items())))
+        if key == getattr(self, "_last_copied_selection", None):
+            return
+        text = screen.get_selected_text()
+        if not text or not text.strip():
+            return
+        self._last_copied_selection = key
+        self.copy_text_out(text)
+
+    def last_reply_text(self) -> str | None:
+        """上一条主治医生回复的原文：history 里 kind=assistant 的记录正文，
+        即 render_record 里喂给 Markdown(text) 的同一个字符串。"""
+        for record in reversed(self.history):
+            kind, text, _tone = record
+            if kind == "assistant" and text and text != NO_TEXT_REPLY:
+                return text
+        return None
+
+    def action_copy_last_reply(self) -> None:
+        text = self.last_reply_text()
+        if text is None:
+            self._log(COPY_EMPTY, tone="muted")
+            return
+        self.copy_text_out(text)
+
     def action_interrupt(self) -> None:
         future = self._confirm_future
         if future is not None and not future.done():
@@ -4287,6 +4535,9 @@ class CifixChatApp(App):
             return
         if command == "/diff":
             self._cmd_diff()
+            return
+        if command == "/copy":
+            self.action_copy_last_reply()
             return
         if command == "/sessions":
             self._cmd_sessions(text)
