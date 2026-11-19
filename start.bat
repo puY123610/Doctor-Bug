@@ -6,13 +6,19 @@ REM 做法参考 AUTOMATIC1111 的 webui-user.bat（同类项目通行做法）�
 REM 运行之前需要先准备好：Python 3.12（装的时候勾选 Add to PATH）和联网。没有 Python 时脚本会停下来说明，不会自己下载（太慢）。
 cd /d %~dp0
 
-if exist .venv\.drbug_setup_ok goto ask_target
+REM 光有装好的记号还不算数：环境里的 python 得真在，缺了就重装。
+if not exist .venv\.drbug_setup_ok goto setup
+if not exist .venv\Scripts\python.exe goto setup
+goto ask_target
 
-where py >nul 2>&1 || goto no_python
-py -3.12 -c "import sys" >nul 2>&1 || goto no_python
+:setup
+set PYVER=
+py -3.12 -c "import sys" >nul 2>&1 && set PYVER=-3.12
+if not defined PYVER py -3.11 -c "import sys" >nul 2>&1 && set PYVER=-3.11
+if not defined PYVER goto no_python
 
 echo 第一次运行：正在建环境、装依赖，大约几分钟，别关窗口…
-py -3.12 -m venv .venv || goto failed
+py %PYVER% -m venv .venv || goto failed
 .venv\Scripts\pip.exe install -r requirements.txt || goto failed
 type nul > .venv\.drbug_setup_ok
 echo 环境装好了，以后再打开就直接进。
@@ -40,6 +46,7 @@ exit /b 1
 
 :failed
 echo 出问题了：环境没装成功，多半是网络不通（装依赖要联网）。
+echo 国内网络可以先在命令提示符里运行 set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple 再重新双击这个脚本。
 echo 把上面这段文字拍下来发给我们就行；也可以删掉本文件夹里的 .venv 再重新运行这个脚本。
 pause
 exit /b 1

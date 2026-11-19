@@ -19,7 +19,8 @@ fail() {
 }
 
 # ---------- 1) 第一次运行才装环境 ----------
-if [ ! -f ".venv/.drbug_setup_ok" ]; then
+# 光有装好的记号还不算数：环境里的 python 得真能跑，跑不了就重装。
+if [ ! -f ".venv/.drbug_setup_ok" ] || [ ! -x ".venv/bin/python" ]; then
   PY=""
   for c in python3.12 python3.11 python3; do
     if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
@@ -35,7 +36,7 @@ if [ ! -f ".venv/.drbug_setup_ok" ]; then
   echo "第一次运行：正在建环境、装依赖，大约几分钟，别关窗口…"
   rm -rf .venv
   "$PY" -m venv .venv || fail "虚拟环境没建起来。"
-  .venv/bin/pip install -r requirements.txt || fail "依赖没装成功，多半是网络不通（装依赖要联网）。"
+  .venv/bin/pip install -r requirements.txt || fail "依赖没装成功，多半是网络不通（装依赖要联网）。国内网络可以换个快些的下载源：删掉 .venv 后，运行 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash start.sh 重新装。"
   touch ".venv/.drbug_setup_ok"
   echo "环境装好了，以后再打开就直接进。"
 fi
