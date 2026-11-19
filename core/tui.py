@@ -6394,6 +6394,11 @@ class CifixChatApp(App):
         if secretary_tool is not None:
             secretary_tool._denied_targets = set()
             secretary_tool._denied_reason = ""
+        # APPLY2：apply_result 按工具名分流；每轮开头清掉放行条与本轮拒绝。
+        apply_tool = getattr(agent, "_drbug_apply_tool", None)
+        if apply_tool is not None:
+            apply_tool.reset_round()
+        self._apply_answered = []
         pending_input: Any = message
         answered: list[tuple[str, str]] = []
         rounds = 0
@@ -6475,6 +6480,31 @@ class CifixChatApp(App):
                         ),
                     )
                 answered = []
+            apply_answered = list(getattr(self, "_apply_answered", []) or [])
+            if apply_answered:
+                # 恢复流走完：答 Y 的已真正执行（或被 apply 机器拒绝），答 N 的没执行。
+                engine = PolicyEngine(
+                    workspace=self._dispatcher_workspace()
+                )
+                for target, question, answer, before in apply_answered:
+                    executed = (
+                        apply_tool is not None
+                        and apply_tool.executions > before
+                    )
+                    engine.audit(
+                        "secretary",
+                        "apply_result",
+                        target,
+                        Decision(
+                            verdict="allow" if answer == "Y" else "deny",
+                            tier=1,
+                            reason=(
+                                f"问：{question}；答复 {answer}；"
+                                f"{'已执行' if executed else '未执行'}"
+                            ),
+                        ),
+                    )
+                self._apply_answered = []
             if confirm_event is None:
                 return
             rounds += 1
@@ -6609,6 +6639,54 @@ class CifixChatApp(App):
                     raw_input = _json.loads(raw_input)
                 except ValueError:
                     raw_input = {}
+            apply_tool = getattr(agent, "_drbug_apply_tool", None)
+            if (
+                str(getattr(tool_call, "name", "") or "") == "apply_result"
+                and apply_tool is not None
+            ):
+                # 文案由程序按真实结果包与 dry_run 文件清单拼，不收模型描述；
+                # 只认 Y/N，不提供会话放行或永久规则。
+                apply_question = await asyncio.to_thread(
+                    apply_tool.confirm_question, raw_input
+                )
+                self._event(apply_question, "warning")
+                self._set_busy_widget(True)
+                raw_answer = await self._present_confirm([apply_question])
+                code = (
+                    raw_answer[0]
+                    if isinstance(raw_answer, tuple)
+                    else str(raw_answer)
+                )
+                apply_answer = (
+                    "Y" if str(code).strip().upper() in {"Y", "YES"} else "N"
+                )
+                if apply_answer == "Y":
+                    apply_tool.release(raw_input)
+                else:
+                    apply_tool.deny_round()
+                results.append(
+                    ConfirmResult(
+                        confirmed=apply_answer == "Y",
+                        tool_call=tool_call,
+                        rules=None,
+                    )
+                )
+                apply_target = (
+                    str(raw_input.get("bundle") or "").strip()
+                    if isinstance(raw_input, dict)
+                    else ""
+                ) or "最近一次结果包"
+                self._apply_answered = list(
+                    getattr(self, "_apply_answered", []) or []
+                ) + [
+                    (
+                        apply_target,
+                        apply_question,
+                        apply_answer,
+                        apply_tool.executions,
+                    )
+                ]
+                continue
             target = ""
             if isinstance(raw_input, dict):
                 target = str(raw_input.get("file_path") or "")

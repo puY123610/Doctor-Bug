@@ -1309,7 +1309,8 @@ DISPATCHER_SYSTEM_PROMPT = """\
 做事规矩：
 - 你只能通过工具干活：platform_check、run_repair、propose_repro、
   freeze_repro、freeze_behavior_check、accept_check、show_run、
-  kb_explain、show_agent_archive、list_roster、add_worker、remove_worker。
+  kb_explain、show_agent_archive、list_roster、add_worker、remove_worker、
+  apply_result。
 - 汇报必须以工具返回为准，禁止编造检查结果、运行结果、轮数或文件路径。
   工具没返回的就说不知道，并说明要先用哪个工具查。
 - 当前绑定工作区: {workspace}。
@@ -1337,6 +1338,8 @@ DISPATCHER_SYSTEM_PROMPT = """\
   的结果，并说明“最终以你自己实际用起来为准”。
 - 老板问「为什么派给这个人」时，用 kb_explain 讲清是哪条失败、按哪条规则派的。
 - 老板要看某次运行记录时，用 show_run。
+- 老板明确要求把某次修复的改动正式应用到原项目时，用 apply_result；程序会
+  拿真实结果包和要改的文件清单问老板，老板答 Y 才写，答 N 就别再换法重试。
 - 老板要看某位员工的身份或记忆时，用 show_agent_archive，传员工名。工具说
   没有这个人就照实说，不要编档案内容。
 - 团队管理：只管名册里有谁，不管活怎么派。
@@ -1403,8 +1406,251 @@ def _allowed_tool(func: Callable[..., Any], **kwargs: Any) -> FunctionTool:
     )
 
 
-def build_tools() -> list[FunctionTool]:
-    """构造注册给调度员的平台工具列表（不触碰模型/网络）。"""
+# ---------------------------------------------------------------------------
+# APPLY2：把结果包的改动正式应用到原项目（对话工具）
+# ---------------------------------------------------------------------------
+# 复用：results.apply_bundle（指纹核对 / 已拒绝包 / 密钥路径三道关，成功时
+# 自写 adoption.json，与命令行 adopt 同字段）；确认走现有确认回路
+# （core/api.py 与 TUI 的确认驱动按工具名分流到这里），文案由程序拼。
+_APPLY_STATUS_TEXT = {"modified": "修改", "added": "新建", "deleted": "删除"}
+
+
+def _latest_bundle(workspace_path: Path) -> Path | None:
+    """该工作区最近一次的结果包（结果包目录 = 运行目录下 bundles/）。"""
+    root = _runs_root_for(workspace_path) / "bundles"
+    if not root.is_dir():
+        return None
+    candidates = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        record = child / "record.json"
+        if not (
+            record.is_file()
+            and (child / "patch.diff").is_file()
+            and (child / "adoption.json").is_file()
+        ):
+            continue
+        try:
+            stamp = record.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((stamp, child.name, child))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][2]
+
+
+def _apply_preview(workspace: str | None, bundle: str | None) -> dict:
+    """预检（apply_bundle 的 dry_run，一个字不写）：给确认文案与执行共用。"""
+    workspace, rejection = _workspace_for_tool("apply_result", workspace)
+    if rejection is not None:
+        return {"ok": False, "text": rejection}
+    assert workspace is not None
+    workspace_path = _resolve_workspace(workspace)
+    if not workspace_path.is_dir():
+        return {"ok": False, "text": f"没有应用：工作区不存在 {workspace_path}"}
+    if bundle:
+        bundle_dir = locate_bundle(_resolve_record_path(bundle))
+    else:
+        bundle_dir = _latest_bundle(workspace_path)
+    if bundle_dir is None:
+        return {
+            "ok": False,
+            "text": (
+                "没有应用：还没有可应用的结果包"
+                f"（工作区 {_display_path(workspace_path)}），"
+                "先跑一次修复拿到结果包再说。"
+            ),
+        }
+    from .results import apply_bundle
+
+    try:
+        plan = apply_bundle(bundle_dir, workspace_path, dry_run=True)
+    except (ValueError, FileNotFoundError) as exc:
+        return {
+            "ok": False,
+            "text": f"没有应用：{exc}（结果包 {bundle_dir.name}，原项目一个字没动）",
+        }
+    return {
+        "ok": True,
+        "workspace_path": workspace_path,
+        "bundle_dir": Path(bundle_dir),
+        "files": list(plan["files"]),
+    }
+
+
+def _apply_file_lines(files: list) -> list[str]:
+    return [
+        f"{_APPLY_STATUS_TEXT.get(item['status'], item['status'])} {item['path']}"
+        for item in files
+    ]
+
+
+def apply_confirm_question(preview: dict) -> str:
+    """确认文案：全由程序按真实结果包与 dry_run 文件清单拼，不收模型描述。"""
+    if not preview.get("ok"):
+        return f"确认应用结果包？（预检未通过：{preview.get('text', '')}） 输入 Y 放行 / N 拒绝"
+    files = _apply_file_lines(preview["files"])
+    return (
+        f"确认把结果包 {preview['bundle_dir'].name} 正式应用到原项目 "
+        f"{preview['workspace_path']}？将改动 {len(files)} 个文件："
+        + "、".join(files)
+        + " 输入 Y 放行 / N 拒绝"
+    )
+
+
+def _apply_execute(preview: dict) -> tuple[str, bool]:
+    """老板点头后真正写盘：只调用 apply_bundle，不另写校验。"""
+    from .results import apply_bundle
+
+    bundle_dir = preview["bundle_dir"]
+    try:
+        result = apply_bundle(bundle_dir, preview["workspace_path"])
+    except (ValueError, FileNotFoundError) as exc:
+        return (
+            f"没有应用：{exc}（结果包 {bundle_dir.name}，原项目一个字没动）",
+            False,
+        )
+    lines = [
+        f"已把结果包 {bundle_dir.name} 的改动正式应用到原项目 "
+        f"{_display_path(Path(result['workspace']))}，"
+        f"一共改了 {len(result['files'])} 个文件：",
+        *[f"- {line}" for line in _apply_file_lines(result["files"])],
+        "采纳记录已更新为「已采纳」。",
+    ]
+    return "\n".join(lines), True
+
+
+APPLY_NEEDS_CONFIRM = (
+    "没有应用：把改动正式写进原项目必须由老板在确认里答 Y；"
+    "这次没有拿到老板的点头，原项目一个字都没写。"
+)
+
+
+def apply_result(workspace: str | None = None, bundle: str | None = None) -> str:
+    """把某次修复的结果包改动正式应用到原项目（会改老板的原文件）。
+
+    只有老板明确要求「把改动正式应用到原项目」时才用。调用后程序会按真实
+    结果包和将被改动的文件清单向老板确认，老板答 Y 才会写；答 N 或没人回答
+    就不写。写之前逐个文件核对基线指纹，原文件运行后被改过、结果包已被标
+    记拒绝、涉及密钥凭据路径，都整包拒绝，一个字不写。
+
+    Args:
+        workspace: 原项目；留空时用会话绑定工作区。
+        bundle: 结果包目录或运行记录路径；留空时用该工作区最近一次的结果包。
+    """
+    _tool_event("apply_result", f"workspace={workspace} bundle={bundle}")
+    preview = _apply_preview(workspace, bundle)
+    if not preview["ok"]:
+        return preview["text"]
+    return APPLY_NEEDS_CONFIRM
+
+
+class _ApplyResultTool(FunctionTool):
+    """apply_result 的工具壳：权限检查给出 ASK，确认驱动答 Y 发一次性放行条。
+
+    * 挂了确认应答者：预检通过即 ASK，问题文案由程序拼（apply_confirm_question）；
+    * 没挂应答者：按拒绝落地（无人可答 = 拒绝），工具本体也拿不到放行条；
+    * 同一轮里老板答过 N：后续 apply_result 调用一律直接拒绝，不再打扰；
+    * 放行条只对答 Y 的那次调用（同一组参数）有效，用后即毁。
+    """
+
+    def __init__(self, has_confirm_responder: bool = False) -> None:
+        super().__init__(
+            func=_offload_to_thread(apply_result),
+            is_read_only=False,
+        )
+        self._has_confirm_responder = bool(has_confirm_responder)
+        self._release: tuple[str, str] | None = None
+        self._denied_round = False
+        self.executions = 0
+
+    @staticmethod
+    def _key(tool_input: Any) -> tuple[str, str]:
+        data = tool_input if isinstance(tool_input, dict) else {}
+        return (
+            str(data.get("workspace") or "").strip(),
+            str(data.get("bundle") or "").strip(),
+        )
+
+    def preview(self, tool_input: Any) -> dict:
+        data = tool_input if isinstance(tool_input, dict) else {}
+        return _apply_preview(data.get("workspace"), data.get("bundle"))
+
+    def confirm_question(self, tool_input: Any) -> str:
+        return apply_confirm_question(self.preview(tool_input))
+
+    def release(self, tool_input: Any) -> None:
+        self._release = self._key(tool_input)
+
+    def deny_round(self) -> None:
+        self._release = None
+        self._denied_round = True
+
+    def reset_round(self) -> None:
+        self._release = None
+        self._denied_round = False
+
+    async def check_permissions(
+        self, tool_input: Any = None, *_args: Any, **_kwargs: Any
+    ) -> PermissionDecision:
+        if self._denied_round:
+            message = "老板拒绝了，别再试（本轮不会再问）"
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=message,
+                decision_reason=message,
+            )
+        if self._release is not None and self._release == self._key(tool_input):
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message="已确认",
+                decision_reason="已确认",
+            )
+        preview = await asyncio.to_thread(self.preview, tool_input)
+        if not preview["ok"]:
+            # 预检不过：不用问，工具本体只回报原因，一个字不写。
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message="预检未通过，只回报原因",
+                decision_reason="预检未通过，只回报原因",
+            )
+        question = apply_confirm_question(preview)
+        if not self._has_confirm_responder:
+            message = f"没人能答确认，按拒绝落地，未应用：{question}"
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=message,
+                decision_reason=message,
+            )
+        return PermissionDecision(
+            behavior=PermissionBehavior.ASK,
+            message=question,
+            decision_reason=question,
+            bypass_immune=True,
+        )
+
+    async def call(self, **kwargs: Any) -> Any:
+        key = self._key(kwargs)
+        if self._release is not None and self._release == key:
+            self._release = None
+            preview = await asyncio.to_thread(self.preview, kwargs)
+            if not preview["ok"]:
+                return self._convert_func_result_to_chunk(preview["text"])
+            text, applied = await asyncio.to_thread(_apply_execute, preview)
+            if applied:
+                self.executions += 1
+            return self._convert_func_result_to_chunk(text)
+        return await super().call(**kwargs)
+
+
+def build_tools(has_confirm_responder: bool = False) -> list[FunctionTool]:
+    """构造注册给调度员的平台工具列表（不触碰模型/网络）。
+
+    ``has_confirm_responder`` 只影响 apply_result：没挂确认应答者时它按拒绝落地。
+    """
     return [
         _allowed_tool(platform_check, is_read_only=True),
         _allowed_tool(run_repair, is_read_only=False),
@@ -1412,6 +1658,7 @@ def build_tools() -> list[FunctionTool]:
         _allowed_tool(freeze_repro, is_read_only=False),
         _allowed_tool(freeze_behavior_check, is_read_only=False),
         _allowed_tool(accept_check, is_read_only=True),
+        _ApplyResultTool(has_confirm_responder=has_confirm_responder),
         _allowed_tool(make_brief, is_read_only=False),
         _allowed_tool(show_brief, is_read_only=True),
         _allowed_tool(show_run, is_read_only=True),
@@ -1858,7 +2105,9 @@ def build_dispatcher(
         str(getattr(active_model, "model", "") or "")
     ).vision
 
-    tools: list[Any] = list(build_tools())
+    tools: list[Any] = list(
+        build_tools(has_confirm_responder=confirm_responder is not None)
+    )
     secretary_read: _SecretaryRead | None = None
     if secretary_files and bound_workspace is not UNBOUND_WORKSPACE:
         secretary_read = _SecretaryRead(
@@ -1905,6 +2154,10 @@ def build_dispatcher(
         agent._drbug_secretary_read = secretary_read
     # set_dispatcher_default_actors 重建提示词时保持本 Agent 的绑定工作区
     # 与是否看图（能力表，不写死在提示词常量里）。
+    # APPLY2：确认驱动按工具名分流时靠这个引用发放行条 / 记本轮拒绝。
+    agent._drbug_apply_tool = next(
+        (tool for tool in tools if isinstance(tool, _ApplyResultTool)), None
+    )
     agent._drbug_workspace = bound_workspace
     agent._drbug_mode = mode
     agent._drbug_vision = vision
@@ -1916,6 +2169,7 @@ __all__ = [
     "UNBOUND_WORKSPACE",
     "UNBOUND_WORKSPACE_REJECTION",
     "accept_check",
+    "apply_result",
     "build_dispatcher",
     "build_tools",
     "build_user_message",

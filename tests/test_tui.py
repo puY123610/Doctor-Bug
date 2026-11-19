@@ -593,6 +593,7 @@ class DispatcherAgentTest(unittest.TestCase):
                 "freeze_repro",
                 "freeze_behavior_check",
                 "accept_check",
+                "apply_result",  # APPLY2：与 run_repair、accept_check 同处注册
                 "make_brief",
                 "show_brief",
                 "show_run",

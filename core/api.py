@@ -923,6 +923,11 @@ async def _drive_confirming_reply(self, agent, message):
     secretary_tool = getattr(agent, "_drbug_secretary_read", None)
     if secretary_tool is not None:
         secretary_tool._denied_targets = set()
+    # APPLY2：apply_result 按工具名分流；每轮开头清掉放行条与本轮拒绝。
+    apply_tool = getattr(agent, "_drbug_apply_tool", None)
+    if apply_tool is not None:
+        apply_tool.reset_round()
+    apply_answered: list[tuple[str, str, str, int]] = []
     pending = message
     answered: list[tuple[str, str]] = []
     rounds = 0
@@ -962,6 +967,25 @@ async def _drive_confirming_reply(self, agent, message):
                     ),
                 )
             answered = []
+        if apply_answered:
+            # 恢复流走完：答 Y 的已真正执行（或被 apply 机器拒绝），答 N 的没执行。
+            engine = PolicyEngine(workspace=self.workspace)
+            for target, question, answer, before in apply_answered:
+                executed = apply_tool is not None and apply_tool.executions > before
+                engine.audit(
+                    "secretary",
+                    "apply_result",
+                    target,
+                    Decision(
+                        verdict="allow" if answer == "Y" else "deny",
+                        tier=1,
+                        reason=(
+                            f"问：{question}；答复 {answer}；"
+                            f"{'已执行' if executed else '未执行'}"
+                        ),
+                    ),
+                )
+            apply_answered = []
         if confirm_event is None:
             return last_msg
         rounds += 1
@@ -987,6 +1011,59 @@ async def _drive_confirming_reply(self, agent, message):
             raw = tool_call.input
             if isinstance(raw, str):
                 raw = json.loads(raw)
+            if (
+                str(getattr(tool_call, "name", "") or "") == "apply_result"
+                and apply_tool is not None
+            ):
+                # 文案由程序按真实结果包与 dry_run 文件清单拼，不收模型描述。
+                apply_question = await asyncio.to_thread(
+                    apply_tool.confirm_question, raw
+                )
+                if self._event_sink is not None:
+                    self._event_sink(
+                        {
+                            "type": "confirm",
+                            "confirm_line": apply_question,
+                            "text": apply_question,
+                        }
+                    )
+                if self.confirm_timeout is None:
+                    apply_answer = self.confirm_responder(apply_question)
+                else:
+                    try:
+                        apply_answer = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.confirm_responder, apply_question
+                            ),
+                            timeout=self.confirm_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        apply_answer = "TIMEOUT"
+                if apply_answer == "Y":
+                    apply_tool.release(raw)
+                else:
+                    apply_tool.deny_round()
+                results.append(
+                    ConfirmResult(
+                        confirmed=apply_answer == "Y",
+                        tool_call=tool_call,
+                        rules=None,
+                    )
+                )
+                apply_target = (
+                    str(raw.get("bundle") or "").strip()
+                    if isinstance(raw, dict)
+                    else ""
+                ) or "最近一次结果包"
+                apply_answered.append(
+                    (
+                        apply_target,
+                        apply_question,
+                        apply_answer,
+                        apply_tool.executions,
+                    )
+                )
+                continue
             target = ""
             if isinstance(raw, dict):
                 target = str(raw.get("file_path", "")).strip()
