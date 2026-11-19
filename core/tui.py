@@ -2627,6 +2627,40 @@ def _done_future(value: Any) -> Any:
     return future
 
 
+class _ConfirmReasonInput(Input):
+    """APPLY2-fix1：确认弹窗的「拒绝理由」框。
+
+    框为空时按同意键（Y/y）仍是「同意」，不被框吞成一个字母；
+    框里已有字时，所有字母照常打字。回车的路由在 ConfirmModal.on_key。
+    """
+
+    async def _on_key(self, event: events.Key) -> None:
+        yes_key = keybinds.key_of("confirm_yes")
+        pressed = (event.character or event.key or "").lower()
+        if (
+            yes_key is not None
+            and not self.value
+            and pressed == yes_key
+        ):
+            event.stop()
+            event.prevent_default()
+            screen = self.screen
+            if isinstance(screen, ConfirmModal) and not screen._in_preview:
+                screen._answer("Y")
+            return
+        await super()._on_key(event)
+
+
+def _confirm_key_hint() -> str:
+    """APPLY2-fix1：弹窗里那行大白话按键说明，按键位注册表程序拼。"""
+    yes_key = (keybinds.key_of("confirm_yes") or "y").upper()
+    no_key = (keybinds.key_of("confirm_no") or "n").upper()
+    return (
+        f"按 {yes_key} 同意，按 {no_key} 或 Esc 拒绝；"
+        "下面这个框只在拒绝时填理由，可不填（填了再按回车＝带理由拒绝）"
+    )
+
+
 class ConfirmModal(ModalScreen[None]):
     """权限确认弹窗（PERM2a）。
 
@@ -2635,7 +2669,8 @@ class ConfirmModal(ModalScreen[None]):
     交回 _service_confirm 正在等的 future，形状是
     ``(代码, 理由)``：代码 Y/A/P/N，理由只在拒绝时有意义。
     理由输入框默认不抢焦点：字母键直接是答复键；点入或 Tab
-    进输入框后，字母只打字，Enter = 带理由拒绝。
+    进输入框后，字母只打字。APPLY2-fix1：框为空时 Y 仍是同意、
+    回车不产生答复；框里有理由时回车 = 带理由拒绝。
     """
 
     BINDINGS = keybinds.bindings_for(keybinds.SCREEN_CONFIRM)
@@ -2670,7 +2705,8 @@ class ConfirmModal(ModalScreen[None]):
             yield Static(
                 "\n".join(self._lines), id="confirm-body", markup=False
             )
-            yield Input(
+            yield Static(_confirm_key_hint(), id="confirm-keys", markup=False)
+            yield _ConfirmReasonInput(
                 placeholder="拒绝理由（可选，填了会转告秘书）",
                 id="confirm-reason",
             )
@@ -2704,9 +2740,13 @@ class ConfirmModal(ModalScreen[None]):
         reason_input = self.query_one("#confirm-reason", Input)
         enter_key = keybinds.key_of("confirm_enter")
         if reason_input.has_focus:
+            # APPLY2-fix1：框里有理由时回车＝带理由拒绝；空框回车不产生
+            # 任何答复（弹窗继续等），绝不记成拒绝。
             if enter_key is not None and event.key == enter_key:
                 event.stop()
-                self._answer("N")
+                event.prevent_default()
+                if self._reason():
+                    self._answer("N")
             return
         key = event.key.lower()
         preview_key = keybinds.key_of("confirm_preview")
